@@ -15,52 +15,28 @@ torch.autograd.set_detect_anomaly(True)
 num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
 distributed = num_gpus > 1
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train segmentation network')
-    parser.add_argument('--cfg',
-                        type=str,
-                        default="config/hrnet48.yaml",
-                        help='experiment configure file name'
-                        )
-    parser.add_argument('--val_only',
-                        action="store_true",
-                        help='flag to do evaluation on val set')
-    parser.add_argument('--test_only',
-                        action="store_true",
-                        help='flag to do evaluation on test set')
-    parser.add_argument('--data_root', type=str,
-                        default="/ssd1/zhiwen/projects/CADTransformer/data/floorplan_v1")
-    parser.add_argument('--embed_backbone', type=str,
-                        default="hrnet48")
-    parser.add_argument('--pretrained_model', type=str,
-                        default="./pretrained_models/HRNet_W48_C_ssld_pretrained.pth")
+    parser.add_argument('--cfg', type=str, default="config/hrnet48.yaml", help='experiment configure file name')
+    parser.add_argument('--val_only', action="store_true", help='flag to do evaluation on val set')
+    parser.add_argument('--test_only', action="store_true", help='flag to do evaluation on test set')
+    parser.add_argument('--data_root', type=str, default="/ssd1/zhiwen/projects/CADTransformer/data/floorplan_v1")
+    parser.add_argument('--embed_backbone', type=str, default="hrnet48")
+    parser.add_argument('--pretrained_model', type=str, default="./pretrained_models/HRNet_W48_C_ssld_pretrained.pth")
     parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument("--log_step", type=int,
-                        default=100,
-                        help='steps for logging')
-    parser.add_argument("--img_size", type=int,
-                        default=700,
-                        help='image size of rasterized image')
-    parser.add_argument("--max_prim", type=int,
-                        default=12000,
-                        help='maximum primitive number for each batch')
-    parser.add_argument("--load_ckpt", type=str,
-                        default='',
-                        help='load checkpoint')
-    parser.add_argument("--resume_ckpt", type=str,
-                        default='',
-                        help='continue train while loading checkpoint')
-    parser.add_argument("--log_dir", type=str,
-                        default='',
-                        help='logging directory')
+    parser.add_argument("--log_step", type=int, default=100, help='steps for logging')
+    parser.add_argument("--img_size", type=int, default=700, help='image size of rasterized image')
+    parser.add_argument("--max_prim", type=int, default=12000, help='maximum primitive number for each batch')
+    parser.add_argument("--load_ckpt", type=str, default='', help='load checkpoint')
+    parser.add_argument("--resume_ckpt", type=str, default='', help='continue train while loading checkpoint')
+    parser.add_argument("--log_dir", type=str, default='', help='logging directory')
     parser.add_argument('--seed', type=int, default=304)
     parser.add_argument('--debug', action="store_true")
-    parser.add_argument('opts',
-                        help="Modify config options using the command-line",
-                        default=None,
-                        nargs=argparse.REMAINDER)
+    parser.add_argument('opts', help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)
     args = parser.parse_args()
     return args
+
 
 def main():
     args = parse_args()
@@ -68,11 +44,11 @@ def main():
 
     os.makedirs(cfg.log_dir, exist_ok=True)
     if cfg.eval_only:
-        logger= create_logger(cfg.log_dir, 'val')
+        logger = create_logger(cfg.log_dir, 'val')
     elif cfg.test_only:
-        logger= create_logger(cfg.log_dir, 'test')
+        logger = create_logger(cfg.log_dir, 'test')
     else:
-        logger= create_logger(cfg.log_dir, 'train')
+        logger = create_logger(cfg.log_dir, 'train')
 
     # Distributed Train Config
     torch.cuda.set_device(args.local_rank)
@@ -83,33 +59,28 @@ def main():
 
     # Create Model
     model = CADTransformer(cfg)
-    CE_loss = torch.nn.CrossEntropyLoss().cuda()
+    ce_loss = torch.nn.CrossEntropyLoss().cuda()
 
     # Create Optimizer
     if cfg.optimizer == 'Adam':
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=cfg.learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-08,
-            weight_decay=cfg.weight_decay
-        )
+        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=cfg.weight_decay)
     else:
         optimizer = torch.optim.SGD(model.parameters(), lr=cfg.learning_rate, momentum=0.9)
 
-    model = torch.nn.parallel.DistributedDataParallel(
-        module=model.to(device), broadcast_buffers=False,
-        device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
+    model = torch.nn.parallel.DistributedDataParallel(module=model.to(device), broadcast_buffers=False, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
+    # 设置为训练模式，保留梯度
     model.train()
 
+    # 这段代码主要是用来加载或恢复训练的checkpoint，并设置数据加载器。
+    # 如果设置了cfg.load_ckpt或cfg.resume_ckpt，则会尝试加载或恢复checkpoint。如果加载或恢复成功，就会将模型参数和优化器状态设置为checkpoint的值。
+    # 然后就会设置数据加载器，用于训练、验证或测试模型。get_train_loader、get_val_loader和get_test_loader函数分别返回对应的数据加载器，加载器从预处理后的数据集中读取数据，每个批次的数据量由cfg.batch_size指定。
     # Load/Resume ckpt
     start_epoch = 0
     if cfg.load_ckpt != '':
         if os.path.exists(cfg.load_ckpt):
             checkpoint = torch.load(cfg.load_ckpt, map_location=torch.device("cpu"))
             model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info("=> loaded checkpoint '{}' (epoch {})".format(
-                cfg.load_ckpt, checkpoint['epoch']))
+            logger.info("=> loaded checkpoint '{}' (epoch {})".format(cfg.load_ckpt, checkpoint['epoch']))
         else:
             logger.info("=>Failed: no checkpoint found at '{}'".format(cfg.load_ckpt))
             exit(0)
@@ -132,19 +103,14 @@ def main():
     # Set up Dataloader
     torch.multiprocessing.set_start_method('spawn', force=True)
     val_dataset = CADDataLoader(split='val', do_norm=cfg.do_norm, cfg=cfg)
-    val_dataloader = DataLoaderX(args.local_rank, dataset=val_dataset,
-                                batch_size=cfg.test_batch_size, shuffle=False,
-                                num_workers=cfg.WORKERS, drop_last=False)
+    val_dataloader = DataLoaderX(args.local_rank, dataset=val_dataset, batch_size=cfg.test_batch_size, shuffle=False, num_workers=cfg.WORKERS, drop_last=False)
     # Eval Only
     if args.local_rank == 0:
         if cfg.eval_only:
             eval_F1 = do_eval(model, val_dataloader, logger, cfg)
             exit(0)
-
     test_dataset = CADDataLoader(split='test', do_norm=cfg.do_norm, cfg=cfg)
-    test_dataloader = DataLoaderX(args.local_rank, dataset=test_dataset,
-                                 batch_size=cfg.test_batch_size, shuffle=False,
-                                 num_workers=cfg.WORKERS, drop_last=False)
+    test_dataloader = DataLoaderX(args.local_rank, dataset=test_dataset, batch_size=cfg.test_batch_size, shuffle=False, num_workers=cfg.WORKERS, drop_last=False)
     # Test Only
     if args.local_rank == 0:
         if cfg.test_only:
@@ -153,9 +119,7 @@ def main():
 
     train_dataset = CADDataLoader(split='train', do_norm=cfg.do_norm, cfg=cfg)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
-    train_dataloader = DataLoaderX(args.local_rank, dataset=train_dataset,
-                                  sampler=train_sampler, batch_size=cfg.batch_size,
-                                  num_workers=cfg.WORKERS, drop_last=True)
+    train_dataloader = DataLoaderX(args.local_rank, dataset=train_dataset, sampler=train_sampler, batch_size=cfg.batch_size, num_workers=cfg.WORKERS, drop_last=True)
 
     def bn_momentum_adjust(m, momentum):
         if isinstance(m, torch.nn.BatchNorm2d) or isinstance(m, torch.nn.BatchNorm1d):
@@ -171,8 +135,7 @@ def main():
 
         logger.info("\n\n")
         logger.info(f'Epoch {global_epoch + 1} ({epoch + 1}/{cfg.epoch})')
-        lr = max(cfg.learning_rate * (cfg.lr_decay ** (epoch // cfg.step_size)),
-                 cfg.LEARNING_RATE_CLIP)
+        lr = max(cfg.learning_rate * (cfg.lr_decay ** (epoch // cfg.step_size)), cfg.LEARNING_RATE_CLIP)
         if epoch <= cfg.epoch_warmup:
             lr = cfg.learning_rate_warmup
 
@@ -192,10 +155,10 @@ def main():
                 optimizer.zero_grad()
 
                 seg_pred = model(image, xy, rgb_info, nns)
-                seg_pred = seg_pred.contiguous().view(-1, cfg.num_class+1)
+                seg_pred = seg_pred.contiguous().view(-1, cfg.num_class + 1)
                 target = target.view(-1, 1)[:, 0]
 
-                loss_seg = CE_loss(seg_pred, target)
+                loss_seg = ce_loss(seg_pred, target)
                 loss = loss_seg
                 loss.backward()
                 optimizer.step()
@@ -208,13 +171,7 @@ def main():
         if args.local_rank == 0:
             logger.info('Save last model...')
             savepath = os.path.join(cfg.log_dir, 'last_model.pth')
-            state = {
-                'epoch': epoch,
-                'best_F1': best_F1,
-                'best_epoch': best_epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }
+            state = {'epoch': epoch, 'best_F1': best_F1, 'best_epoch': best_epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), }
             torch.save(state, savepath)
         # assert validation?
         eval = get_eval_criteria(epoch)
@@ -230,13 +187,7 @@ def main():
                 best_epoch = epoch
                 logger.info(f'Save model... Best F1:{best_F1}, Best Epoch:{best_epoch}')
                 savepath = os.path.join(cfg.log_dir, 'best_model.pth')
-                state = {
-                    'epoch': epoch,
-                    'best_F1': best_F1,
-                    'best_epoch': best_epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                }
+                state = {'epoch': epoch, 'best_F1': best_F1, 'best_epoch': best_epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), }
                 torch.save(state, savepath)
 
         global_epoch += 1
